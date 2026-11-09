@@ -290,22 +290,9 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         loadCardImage(_cardImageUri.value)
         // 顺手清一次历史遗留图片（编辑器里没走完流程就退出的那几张）
         pruneCardImages()
-        // 「退款」收入分类是退款入账的固定去向：老版本可能被改名/删除过，启动时补回一个
-        // （用户不能改名/改类型/删除它，所以补回后不会再消失；已有则不重复插入）
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching {
-                val all = categoryDao.getAll()
-                if (all.none { CategoryRules.isRefundIncome(it.type, it.name) }) {
-                    categoryDao.insert(
-                        CategoryEntity(
-                            name = RefundCategory.NAME,
-                            type = TxType.INCOME,
-                            sortOrder = REFUND_INCOME_SORT_ORDER,
-                        ),
-                    )
-                }
-            }.onFailure { AppLog.e("category", "restore refund category failed", it) }
-        }
+        // 注：「退款」收入分类的补回/去重已移到 DefaultData.seedAndRepair，与种子数据同处串行执行。
+        // 以前这里另起一个协程「检查不存在就插入」，会和 Application 里的异步建种子撞车，
+        // 结果是插出两条都不可删除的「退款」分类（用户反馈的实际 bug）。
     }
 
     fun setCardTransform(transform: CardTransform) {
@@ -1445,7 +1432,5 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         const val MODE_PERCENT = "percent"
         const val MODE_AMOUNT = "amount"
 
-        /** 补回「退款」收入分类时的排序位（默认收入分类里排在「红包」之后、「其他」之前） */
-        const val REFUND_INCOME_SORT_ORDER = 3
     }
 }

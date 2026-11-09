@@ -312,7 +312,21 @@ object DefaultData {
     /** 收入分类：「退款」固定排在「其他」之前（退款是常规收入项，其他是兜底项） */
     val defaultIncomeCategories = listOf("工资", "理财", "红包", RefundCategory.NAME, "其他")
 
-    suspend fun seedIfNeeded(db: AccBookDatabase) {
+    /**
+     * 首次启动建种子数据 + **修复重复的「退款」收入分类**。
+     *
+     * 两件事必须串行在同一处做：以前「建种子」在 Application 里异步跑、
+     * 「补回退款分类」在 ViewModel.init 里另起一个协程跑，两者会撞车——
+     * 种子的 insertAll 还没提交时，补回逻辑 getAll() 看不到「退款」，
+     * 于是自己再插一条，最终库里出现两条都不可删除的「退款」。
+     *
+     * 修复策略（幂等，每次启动都能跑）：
+     * 1. 分类表为空才建种子；
+     * 2. 「退款」收入分类多于一条时，保留 id 最小的那条，把其余分类下的流水
+     *    改挂过去（[TransactionDao.reassignCategory]），再删掉多余分类；
+     * 3. 一条都没有就补一条。
+     */
+    suspend fun seedAndRepair(db: AccBookDatabase) {
         if (db.accountDao().countAll() == 0) {
             db.accountDao().insertAll(defaultAccounts.map { AccountEntity(name = it) })
         }
@@ -325,5 +339,42 @@ object DefaultData {
             }
             db.categoryDao().insertAll(expense + income)
         }
+        dedupeRefundCategory(db)
     }
+
+    /**
+     * 保证「退款」收入分类**有且只有一条**。
+     *
+     * 保留 id 最小的那条（最早创建，历史流水大多挂在它上面）；重复项下的流水先改挂过去
+     * 再删除分类——transactions.categoryId 是 RESTRICT 外键，直接删会失败。
+     *
+     * @return 本次修掉的重复条数（0 = 本来就正常）
+     */
+    suspend fun dedupeRefundCategory(db: AccBookDatabase): Int {
+        val dao = db.categoryDao()
+        val refunds = dao.getAll()
+            .filter { it.type == TxType.INCOME && it.name.trim() == RefundCategory.NAME }
+            .sortedBy { it.id }
+        if (refunds.isEmpty()) {
+            dao.insert(
+                CategoryEntity(
+                    name = RefundCategory.NAME,
+                    type = TxType.INCOME,
+                    sortOrder = REFUND_INCOME_SORT_ORDER,
+                ),
+            )
+            return 0
+        }
+        val keep = refunds.first()
+        val extras = refunds.drop(1)
+        extras.forEach { extra ->
+            // 先把挂在重复项上的流水改挂到保留项，再删分类（外键 RESTRICT，不先改删不掉）
+            db.transactionDao().reassignCategory(extra.id, keep.id)
+            dao.deleteById(extra.id)
+        }
+        return extras.size
+    }
+
+    /** 「退款」收入分类的默认排序位（种子数据里排在「红包」之后、「其他」之前） */
+    const val REFUND_INCOME_SORT_ORDER = 3
 }

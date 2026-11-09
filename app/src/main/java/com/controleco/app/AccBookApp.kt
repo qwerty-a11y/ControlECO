@@ -34,6 +34,9 @@ class AccBookApp : Application() {
         CaptureCenter.init(this)
         // 覆盖安装后提示复查通知使用权（广播可能被系统吞掉，冷启动再兜一次）
         CaptureCenter.checkAppUpdated(BuildConfig.VERSION_CODE)
-        applicationScope.launch { DefaultData.seedIfNeeded(db) }
+        // 种子数据 + 「退款」收入分类去重：必须在同一处串行执行。
+        // 以前种子在 Application 异步跑、补回退款分类在 ViewModel.init 另起协程跑，
+        // 两者会撞车插出两条不可删除的「退款」（见 DefaultData.seedAndRepair）。
+        applicationScope.launch { DefaultData.seedAndRepair(db) }
     }
 }
